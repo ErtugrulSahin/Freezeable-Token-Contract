@@ -1,0 +1,158 @@
+import React, { useState, useEffect } from 'react';
+import * as StellarSdk from 'stellar-sdk';
+import freighterApi from "@stellar/freighter-api";
+
+const CONTRACT_ID = "YOUR_CONTRACT_ID_HERE"; // Replace with your deployed contract ID
+const rpc = new StellarSdk.SorobanRpc.Server('https://soroban-testnet.stellar.org');
+const contract = new StellarSdk.Contract(CONTRACT_ID);
+
+const App = () => {
+  const [publicKey, setPublicKey] = useState('');
+  const [balance, setBalance] = useState('');
+  const [freezeStatus, setFreezeStatus] = useState(false);
+  const [to, setTo] = useState('');
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+
+  // Connect Freighter wallet
+  const connectWallet = async () => {
+    const isConnected = await freighterApi.isConnected();
+    if (!isConnected) {
+      alert("Please install the Freighter wallet");
+      window.open('https://freighter.app');
+      return;
+    }
+    const accessObj = await freighterApi.requestAccess();
+    if (accessObj.error) {
+      alert('Error connecting Freighter wallet');
+    } else {
+      setPublicKey(accessObj.address);
+    }
+  };
+
+  // Fetch balance
+  const getBalance = async () => {
+    if (!publicKey) return;
+    try {
+      const inputAddressID = StellarSdk.nativeToScVal(publicKey, { type: "address" });
+      const account = await rpc.getAccount(publicKey);
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: StellarSdk.Networks.TESTNET,
+      })
+        .addOperation(contract.call("balance", inputAddressID))
+        .setTimeout(30)
+        .build();
+      const sim = await rpc.simulateTransaction(tx);
+      const decoded = StellarSdk.scValToNative(sim.result?.retval);
+      setBalance(decoded.toString());
+    } catch (err) {
+      setError('Failed to get balance: ' + err.message);
+    }
+  };
+
+  // Fetch freeze status
+  const getFreezeStatus = async () => {
+    if (!publicKey) return;
+    try {
+      const inputAddressID = StellarSdk.nativeToScVal(publicKey, { type: "address" });
+      const account = await rpc.getAccount(publicKey);
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: StellarSdk.Networks.TESTNET,
+      })
+        .addOperation(contract.call("frozen_accounts", inputAddressID))
+        .setTimeout(30)
+        .build();
+      const sim = await rpc.simulateTransaction(tx);
+      const decoded = StellarSdk.scValToNative(sim.result?.retval);
+      setFreezeStatus(Boolean(decoded));
+    } catch (err) {
+      setError('Failed to get freeze status: ' + err.message);
+    }
+  };
+
+  // Transfer tokens
+  const handleSend = async (e) => {
+    e.preventDefault();
+    try {
+      const inputFrom = StellarSdk.nativeToScVal(publicKey, { type: "address" });
+      const inputTo = StellarSdk.nativeToScVal(to, { type: "address" });
+      const inputValue = StellarSdk.nativeToScVal(value, { type: "i128" });
+      const account = await rpc.getAccount(publicKey);
+      const network = await freighterApi.getNetwork();
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: StellarSdk.Networks.TESTNET,
+      })
+        .addOperation(contract.call("transfer", inputFrom, inputTo, inputValue))
+        .setTimeout(30)
+        .build();
+      const signedTX = await freighterApi.signTransaction(tx.toXDR(), network);
+      const preparedTx = StellarSdk.TransactionBuilder.fromXDR(signedTX, StellarSdk.Networks.TESTNET);
+      await rpc.sendTransaction(preparedTx);
+      setTo('');
+      setValue('');
+      getBalance();
+    } catch (err) {
+      setError('Failed to send: ' + err.message);
+    }
+  };
+
+  // Freeze/unfreeze
+  const handleFreeze = async (freeze) => {
+    try {
+      const inputAccount = StellarSdk.nativeToScVal(publicKey, { type: "address" });
+      const account = await rpc.getAccount(publicKey);
+      const network = await freighterApi.getNetwork();
+      const method = freeze ? "freeze_account" : "unfreeze_account";
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: StellarSdk.Networks.TESTNET,
+      })
+        .addOperation(contract.call(method, inputAccount))
+        .setTimeout(30)
+        .build();
+      const signedTX = await freighterApi.signTransaction(tx.toXDR(), network);
+      const preparedTx = StellarSdk.TransactionBuilder.fromXDR(signedTX, StellarSdk.Networks.TESTNET);
+      await rpc.sendTransaction(preparedTx);
+      getFreezeStatus();
+    } catch (err) {
+      setError('Failed to update freeze status: ' + err.message);
+    }
+  };
+
+  useEffect(() => {
+    connectWallet();
+  }, []);
+
+  useEffect(() => {
+    if (publicKey) {
+      getBalance();
+      getFreezeStatus();
+    }
+  }, [publicKey]);
+
+  return (
+    <div className="app">
+      <h1>Soroban Token dApp</h1>
+      <div>Wallet: <span>{publicKey}</span></div>
+      <div>Balance: <span>{balance}</span></div>
+      <div>Freeze Status: <span>{freezeStatus ? "Frozen" : "Active"}</span></div>
+      {error && <div style={{color:'red'}}>Error: {error}</div>}
+      <button onClick={() => handleFreeze(!freezeStatus)}>
+        {freezeStatus ? "Unfreeze Account" : "Freeze Account"}
+      </button>
+      <div>
+        <h2>Send Tokens</h2>
+        <form onSubmit={handleSend}>
+          <input type="text" value={to} onChange={e => setTo(e.target.value)} placeholder="To Address" />
+          <input type="number" value={value} onChange={e => setValue(e.target.value)} placeholder="Amount" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+export default App;
